@@ -52,7 +52,10 @@ async function patchQueue(slug, values) {
 }
 
 async function nextQueue() {
-  const rows = await rest('jk_queue?select=*&status=in.(pending,retry,extracting)&order=source_rank.asc&limit=1');
+  let rows = await rest('jk_queue?select=*&status=in.(pending,extracting)&order=source_rank.asc&limit=1');
+  if (!rows?.length) {
+    rows = await rest('jk_queue?select=*&status=eq.retry&attempts=lt.3&order=source_rank.asc&limit=1');
+  }
   return rows?.[0] || null;
 }
 
@@ -61,8 +64,9 @@ let episodes = 0;
 while (Date.now() < deadline - 60_000) {
   const row = await nextQueue();
   if (!row) break;
+  const currentAttempt = Number(row.attempts || 0) + 1;
   try {
-    await patchQueue(row.slug, { status: 'extracting', attempts: Number(row.attempts || 0) + 1, last_error: null });
+    await patchQueue(row.slug, { status: 'extracting', attempts: currentAttempt, last_error: null });
     const detail = parseDetail(await fetchHtml(row.source_url, DELAY), row);
     if (!detail.episode_count) throw new Error('No se detectó el número de episodios');
     await rest('jk_animes?on_conflict=slug', {
@@ -78,7 +82,17 @@ while (Date.now() < deadline - 60_000) {
         process.exit(0);
       }
       const sourceUrl = `${BASE}/${row.slug}/${number}/`;
-      const html = await fetchHtml(sourceUrl, DELAY);
+      let html;
+      try {
+        html = await fetchHtml(sourceUrl, DELAY);
+      } catch (error) {
+        if (/HTTP 404/i.test(String(error?.message || error))) {
+          console.warn(`${row.slug}: episodio ${number} no existe (404), se omite sin bloquear la cola`);
+          await patchQueue(row.slug, { next_episode: number + 1 });
+          continue;
+        }
+        throw error;
+      }
       const servers = extractServers(html);
       const downloads = extractDownloads(html);
       const thumbnail = decodeHtml(html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)/i)?.[1] || detail.image_url);
@@ -94,8 +108,11 @@ while (Date.now() < deadline - 60_000) {
     completed += 1;
     console.log(`Completado: ${detail.title} (${detail.episode_count} episodios)`);
   } catch (error) {
-    console.error(`${row.slug}: ${error.message || error}`);
-    await patchQueue(row.slug, { status: 'retry', last_error: String(error.message || error).slice(0, 1000) });
+    const message = String(error?.message || error).slice(0, 1000);
+    const exhausted = currentAttempt >= 3;
+    console.error(`${row.slug}: ${message}${exhausted ? ' (omitido tras 3 intentos)' : ''}`);
+    await patchQueue(row.slug, { status: exhausted ? 'skipped' : 'retry', last_error: message });
   }
 }
 console.log(JSON.stringify({ completed, episodes, stopped_at: new Date().toISOString() }));
+
