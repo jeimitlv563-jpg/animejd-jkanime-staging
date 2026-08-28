@@ -1,0 +1,11 @@
+{
+  "name": "animejd-jkanime-staging",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "node scripts/seed-queue.mjs",
+    "extract": "node scripts/extract-finalized.mjs --max-minutes=290",
+    "status": "node scripts/status.mjs"
+  }
+}
