@@ -2,6 +2,8 @@ name: Extraer JKAnime finalizados
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '23 */6 * * *'
 
 concurrency:
   group: jkanime-finalized-staging
